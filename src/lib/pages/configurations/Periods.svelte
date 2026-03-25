@@ -1,0 +1,359 @@
+<script lang="ts">
+	import { Alert, Button, Heading, Label, Modal, Select, Spinner } from "flowbite-svelte";
+	import { onMount } from "svelte";
+	import { get } from "svelte/store";
+	import Table from "$lib/components/Table.svelte";
+	import { createPeriod, getPeriods, updatePeriod } from "$lib/services/period.service";
+	import { exportPeriodsToExcel, exportPeriodsToPdf } from "$lib/utils/period-export";
+	import { authReady } from "$stores/user.store";
+	import type { Period, TableHeader, TablePagination } from "$lib/types";
+
+	let periods: Period[] = [];
+	let error: string | null = null;
+	let pagination: TablePagination = { page: 1 };
+	let exportingPdf = false;
+	let exportingExcel = false;
+	let exportModalOpen = false;
+	let periodOptions: Period[] = [];
+	let selectedPeriodId = "all";
+	let selectedFormat: "pdf" | "excel" = "pdf";
+	let formOpen = false;
+	let formMode: "create" | "update" = "create";
+	let selectedPeriodIdForEdit: number | null = null;
+	let formData = {
+		name: "",
+		start: "",
+		end: "",
+	};
+	let formSaving = false;
+
+	const headers: TableHeader[] = [
+		{ name: "Nombre", field: "name" },
+		{
+			name: "Inicio",
+			field: "start",
+			formatter: (value: string | Date) => new Date(value).toLocaleDateString(),
+		},
+		{
+			name: "Fin",
+			field: "end",
+			formatter: (value: string | Date) => new Date(value).toLocaleDateString(),
+		},
+		{ name: "Estado", field: "status" },
+	];
+
+	async function loadPeriods() {
+		const res = await getPeriods({ page: pagination.page });
+
+		if (!res) {
+			periods = [];
+			error = "No se pudieron cargar periodos.";
+			return;
+		}
+
+		periods = res.data ?? [];
+		pagination.page = res.page ?? 1;
+		pagination.next_page = res.next_page;
+		pagination.prev_page = res.prev_page;
+		error = null;
+	}
+
+	function toInputDate(value: string | Date) {
+		const parsed = new Date(value);
+		if (Number.isNaN(parsed.getTime())) {
+			return "";
+		}
+		return parsed.toISOString().slice(0, 10);
+	}
+
+	function resetForm() {
+		selectedPeriodIdForEdit = null;
+		formData = {
+			name: "",
+			start: "",
+			end: "",
+		};
+	}
+
+	function openCreateForm() {
+		formMode = "create";
+		resetForm();
+		error = null;
+		formOpen = true;
+	}
+
+	function openEditForm(period: Period) {
+		formMode = "update";
+		selectedPeriodIdForEdit = period.id;
+		formData = {
+			name: period.name,
+			start: toInputDate(period.start),
+			end: toInputDate(period.end),
+		};
+		error = null;
+		formOpen = true;
+	}
+
+	async function savePeriod() {
+		if (!formData.name.trim() || !formData.start || !formData.end) {
+			error = "Completa nombre, fecha de inicio y fecha de fin.";
+			return;
+		}
+
+		if (new Date(formData.start) > new Date(formData.end)) {
+			error = "La fecha de inicio no puede ser mayor que la fecha de fin.";
+			return;
+		}
+
+		formSaving = true;
+		const payload = {
+			name: formData.name.trim(),
+			start: new Date(formData.start).toISOString(),
+			end: new Date(formData.end).toISOString(),
+		};
+
+		let result = null;
+		if (formMode === "create") {
+			result = await createPeriod(payload);
+		} else if (selectedPeriodIdForEdit) {
+			result = await updatePeriod(selectedPeriodIdForEdit, payload);
+		}
+
+		if (!result) {
+			error = "No se pudo guardar el periodo.";
+			formSaving = false;
+			return;
+		}
+
+		formOpen = false;
+		formSaving = false;
+		resetForm();
+		await loadPeriods();
+	}
+
+	function waitForAuthReady(): Promise<void> {
+		if (get(authReady)) {
+			return Promise.resolve();
+		}
+
+		return new Promise((resolve) => {
+			const unsubscribe = authReady.subscribe((value) => {
+				if (value) {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+	}
+
+	function nextPage() {
+		pagination.page = pagination.next_page ?? pagination.page;
+		loadPeriods();
+	}
+
+	function previousPage() {
+		pagination.page = pagination.prev_page ?? pagination.page;
+		loadPeriods();
+	}
+
+	async function getAllPeriods(): Promise<Period[]> {
+		let page = 1;
+		const size = 100;
+		const allPeriods: Period[] = [];
+		let safety = 0;
+
+		while (safety < 100) {
+			safety += 1;
+			const res = await getPeriods({ page, size });
+
+			if (!res) {
+				throw new Error("No se pudieron cargar los periodos para exportar");
+			}
+
+			allPeriods.push(...(res.data ?? []));
+
+			if (!res.next_page) {
+				break;
+			}
+
+			page = res.next_page;
+		}
+
+		return allPeriods;
+	}
+
+	async function handleExportPdf() {
+		exportingPdf = true;
+		try {
+			const allPeriods = await getAllPeriods();
+			exportPeriodsToPdf(allPeriods);
+		} catch (e) {
+			error = "No se pudo generar el PDF de periodos.";
+		} finally {
+			exportingPdf = false;
+		}
+	}
+
+	async function handleExportExcel() {
+		exportingExcel = true;
+		try {
+			const allPeriods = await getAllPeriods();
+			exportPeriodsToExcel(allPeriods);
+		} catch (e) {
+			error = "No se pudo generar el Excel de periodos.";
+		} finally {
+			exportingExcel = false;
+		}
+	}
+
+	async function openExportModal() {
+		try {
+			periodOptions = await getAllPeriods();
+			selectedPeriodId = "all";
+			selectedFormat = "pdf";
+			exportModalOpen = true;
+		} catch (e) {
+			error = "No se pudieron cargar periodos para exportar.";
+		}
+	}
+
+	async function confirmExport() {
+		const selectedPeriods =
+			selectedPeriodId === "all"
+				? periodOptions
+				: periodOptions.filter((item) => `${item.id}` === selectedPeriodId);
+
+		if (selectedPeriods.length === 0) {
+			error = "Selecciona un periodo valido para descargar.";
+			return;
+		}
+
+		exportModalOpen = false;
+
+		if (selectedFormat === "pdf") {
+			exportingPdf = true;
+			try {
+				exportPeriodsToPdf(selectedPeriods);
+			} catch (e) {
+				error = "No se pudo generar el PDF de periodos.";
+			} finally {
+				exportingPdf = false;
+			}
+			return;
+		}
+
+		exportingExcel = true;
+		try {
+			exportPeriodsToExcel(selectedPeriods);
+		} catch (e) {
+			error = "No se pudo generar el Excel de periodos.";
+		} finally {
+			exportingExcel = false;
+		}
+	}
+
+	onMount(async () => {
+		await waitForAuthReady();
+		await loadPeriods();
+	});
+</script>
+
+<div class="w-full h-full px-4 grid gap-3">
+	<div class="flex items-center justify-between gap-3">
+		<Heading tag="h3" class="mb-2">Configuracion de Periodos</Heading>
+		<div class="flex gap-2">
+			<Button size="sm" color="alternative" on:click={openCreateForm}>Nuevo periodo</Button>
+			<Button size="sm" color="primary" on:click={openExportModal} disabled={exportingPdf || exportingExcel}>
+				Descargar reporte
+				{#if exportingPdf || exportingExcel}
+					<Spinner size="sm" class="ml-2" />
+				{/if}
+			</Button>
+		</div>
+	</div>
+
+	{#if error}
+		<Alert type="error" dismissable>{error}</Alert>
+	{/if}
+
+	<Table
+		data={periods}
+		headers={headers}
+		{pagination}
+		on:next={nextPage}
+		on:previous={previousPage}
+		on:rowClick={(event) => openEditForm(event.detail)}
+	/>
+</div>
+
+<Modal
+	title={formMode === "create" ? "Crear periodo" : "Editar periodo"}
+	bind:open={formOpen}
+	outsideclose
+>
+	<div class="grid gap-4">
+		<div>
+			<Label class="mb-1 block" for="period-name">Nombre</Label>
+			<input
+				id="period-name"
+				type="text"
+				class="w-full rounded-lg border border-gray-300 px-3 py-2"
+				bind:value={formData.name}
+				placeholder="Periodo 2026-1"
+			/>
+		</div>
+		<div>
+			<Label class="mb-1 block" for="period-start">Fecha inicio</Label>
+			<input
+				id="period-start"
+				type="date"
+				class="w-full rounded-lg border border-gray-300 px-3 py-2"
+				bind:value={formData.start}
+			/>
+		</div>
+		<div>
+			<Label class="mb-1 block" for="period-end">Fecha fin</Label>
+			<input
+				id="period-end"
+				type="date"
+				class="w-full rounded-lg border border-gray-300 px-3 py-2"
+				bind:value={formData.end}
+			/>
+		</div>
+	</div>
+
+	<svelte:fragment slot="footer">
+		<Button color="primary" on:click={savePeriod} disabled={formSaving}>
+			{formMode === "create" ? "Crear" : "Guardar"}
+			{#if formSaving}
+				<Spinner size="sm" class="ml-2" />
+			{/if}
+		</Button>
+	</svelte:fragment>
+</Modal>
+
+<Modal title="Descargar reporte de periodos" bind:open={exportModalOpen} outsideclose>
+	<div class="grid gap-4">
+		<div>
+			<Label class="mb-1 block">Periodo</Label>
+			<Select bind:value={selectedPeriodId}>
+				<option value="all">Todos los periodos</option>
+				{#each periodOptions as period}
+					<option value={`${period.id}`}>{period.name}</option>
+				{/each}
+			</Select>
+		</div>
+
+		<div>
+			<Label class="mb-1 block">Formato</Label>
+			<Select bind:value={selectedFormat}>
+				<option value="pdf">PDF formal</option>
+				<option value="excel">Excel (.xlsx)</option>
+			</Select>
+		</div>
+	</div>
+
+	<svelte:fragment slot="footer">
+		<Button color="primary" on:click={confirmExport}>Descargar</Button>
+	</svelte:fragment>
+</Modal>
