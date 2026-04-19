@@ -78,9 +78,11 @@ export type Department = {
   name: string;
   code: string;
   pricingId?: number;
+  headId?: number | null;
   createdAt?: Date;
   updatedAt?: Date;
   pricing?: Pricing;
+  head?: User;
   users?: User[];
   students?: StudentOnDepartment[];
   hours?: WorkHours[];
@@ -132,9 +134,9 @@ export type WorkHours = {
   name: string;
   start: Date;
   end: Date;
-  amount: number;
-  price: number;
-  total: number;
+  amount: number | null;
+  price: number | null;
+  total: number | null;
   status: WorkHoursStatus;
   registedBy: number;
   studentId: number;
@@ -170,23 +172,6 @@ export type ScholarshipPayroll = {
   student: Student;
   department: Department;
   workHours: WorkHours[];
-};
-
-export type TimeEntry = {
-  id: number;
-  userId: number;
-  departmentId: number;
-  entryTime: Date;
-  exitTime?: Date;
-  createdAt: Date;
-  updatedAt: Date;
-  user?: User;
-  department?: Department;
-};
-
-export type CreateTimeEntryDto = {
-  userId: number;
-  departmentId: number;
 };
 
 export type ApiPagination<T> = {

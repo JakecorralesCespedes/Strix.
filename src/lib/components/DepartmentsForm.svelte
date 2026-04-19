@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    Alert,
     Button,
     Input,
     Label,
@@ -7,10 +8,11 @@
     Select,
     Spinner,
   } from "flowbite-svelte";
-  import type { Department, Pricing } from "../types";
+  import type { Department, Pricing, User } from "../types";
 
   import { createEventDispatcher, onMount } from "svelte";
   import { getPricing } from "../services/pricing.service";
+  import { getUsers } from "../services/user.service";
   import {
     createDepartment,
     updateDepartment,
@@ -23,52 +25,108 @@
     name: "",
     code: "",
     pricingId: 0,
+    headId: null,
   };
   let pricingList: Array<Pricing> | undefined = [];
+  let userOptions: User[] = [];
+  let availableHeads: User[] = [];
+  let selectedHeadId: number | string | null = null;
+  let headInitialized = false;
+  let currentDepartmentId: number | null = null;
   let isLoading = false;
+  let formError: string | null = null;
 
   $: title = formMode === "create"
     ? "Crear Departamento"
     : "Actualizar Departamento";
 
-  onMount(() => {
-    getPricing().then((res) => {
-      pricingList = res ?? [];
-    });
+  onMount(async () => {
+    const [pricingRes, usersRes] = await Promise.all([
+      getPricing(),
+      getUsers({ page: 1, size: 200 }),
+    ]);
+    pricingList = pricingRes ?? [];
+    userOptions = usersRes?.data ?? [];
   });
+
+  $: availableHeads =
+    formMode === "update" && data.id
+      ? userOptions.filter((user) => {
+          const userDeptId = user.departmentId ?? user.department?.id;
+          return userDeptId === data.id || user.id === data.headId;
+        })
+      : [];
+
+  $: if (!open) {
+    headInitialized = false;
+    currentDepartmentId = null;
+  }
+
+  $: if (open && formMode === "update" && data.id) {
+    if (data.id !== currentDepartmentId || !headInitialized) {
+      currentDepartmentId = data.id;
+      selectedHeadId = data.headId ?? data.head?.id ?? 0;
+      headInitialized = true;
+    }
+  }
+
+  $: if (open && formMode === "create" && !headInitialized) {
+    selectedHeadId = 0;
+    headInitialized = true;
+  }
   function close() {
     dispatch("close");
     open = false;
     isLoading = false;
+    formError = null;
   }
-  function handleSubmit() {
+  async function handleSubmit() {
+    formError = null;
     isLoading = true;
+    const pricingIdValue = Number(data.pricingId);
+    const pricingId = Number.isFinite(pricingIdValue) && pricingIdValue > 0
+      ? pricingIdValue
+      : undefined;
+
     if (formMode === "create") {
-      createDepartment({
+      const res = await createDepartment({
         name: data.name,
         code: data.code,
-        pricingId: data.pricingId,
-      }).then((res) => {
-        close();
+        pricingId,
       });
-      // create
-    } else {
-      // update
-      updateDepartment(data.id as number, {
-        name: data.name,
-        code: data.code,
-        pricingId: data.pricingId,
-      }).then((res) => {
-        if (res) {
-          close();
-        }
-      });
+      if (!res) {
+        formError = "No se pudo crear el departamento.";
+        isLoading = false;
+        return;
+      }
+      close();
+      return;
     }
+
+    const headIdValue = Number(selectedHeadId);
+    const headId = headIdValue > 0 ? headIdValue : null;
+    const res = await updateDepartment(data.id as number, {
+      name: data.name,
+      code: data.code,
+      pricingId,
+      headId,
+    });
+
+    if (!res) {
+      formError = "No se pudo actualizar el departamento.";
+      isLoading = false;
+      return;
+    }
+
+    close();
   }
 </script>
 
 <Modal {title} bind:open outsideclose shadow rounded class="w-[50%]">
   <form class="items-center object-center">
+    {#if formError}
+      <Alert type="error" class="mb-3">{formError}</Alert>
+    {/if}
     <Label>Nombre</Label>
     <Input bind:value={data.name} placeholder="Nombre" />
     <Label>Codigo</Label>
@@ -83,6 +141,23 @@
         <option value={0}>Cargando...</option>
       {/if}
     </Select>
+    {#if formMode === "update"}
+      <Label>Jefe de departamento</Label>
+      <Select label="Jefe" bind:value={selectedHeadId}>
+        <option value={0}>Sin jefe</option>
+        {#if availableHeads.length}
+          {#each availableHeads as user}
+            <option value={user.id}>{user.name}</option>
+          {/each}
+        {:else}
+          <option value={0} disabled>No hay usuarios asignados</option>
+        {/if}
+      </Select>
+    {:else}
+      <p class="text-sm text-gray-500">
+        Puedes asignar el jefe despues de crear el departamento.
+      </p>
+    {/if}
   </form>
 
   <svelte:fragment slot="footer">

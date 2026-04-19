@@ -15,6 +15,7 @@
     name: "",
     code: "",
     pricingId: 0,
+    headId: null,
   };
   let pagination: TablePagination = {
     page: 1,
@@ -24,6 +25,8 @@
     { name: "Nombre", field: "name" },
     { name: "Codigo", field: "code" },
     { name: "Precio", field: "pricing" },
+    { name: "Jefe", field: "head" },
+    { name: "Acciones", field: "actions" },
   ];
 
   async function loadDepartments() {
@@ -48,6 +51,7 @@
       name: "",
       code: "",
       pricingId: 0,
+      headId: null,
     };
     formOpen = true;
   }
@@ -58,6 +62,7 @@
       name: "",
       code: "",
       pricingId: 0,
+      headId: null,
     };
     loadDepartments();
   }
@@ -67,6 +72,7 @@
     selected = {
       ...row,
       pricingId: row.pricingId ?? 1,
+      headId: row.headId ?? row.head?.id ?? null,
     };
     formOpen = true;
   }
@@ -109,10 +115,16 @@
     on:next={nextPage}
     on:previous={previousPage}
   >
-    <TableBodyRow slot="row" let:row on:dblclick={() => handleEdit(row)}>
+    <TableBodyRow slot="row" let:row>
       <TableBodyCell>{row.name}</TableBodyCell>
       <TableBodyCell>{row.code}</TableBodyCell>
       <TableBodyCell>{row.pricing ?? "-"}</TableBodyCell>
+      <TableBodyCell>{row.head?.name ?? "-"}</TableBodyCell>
+      <TableBodyCell>
+        <Button size="xs" color="alternative" on:click={() => handleEdit(row)}>
+          Editar
+        </Button>
+      </TableBodyCell>
     </TableBodyRow>
   </Table>
 
