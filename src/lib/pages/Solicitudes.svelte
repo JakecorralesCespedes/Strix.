@@ -5,6 +5,7 @@
     Button,
     Heading,
     Input,
+    Label,
     Modal,
     Select,
     TableBodyCell,
@@ -18,10 +19,8 @@
     updateScholarshipRequest,
   } from "$lib/services/scholarship-request.service";
   import { getDepartment } from "$lib/services/department.service";
-  import { getStudents } from "$lib/services/student.service";
   import type {
     Department,
-    Student,
     StudentOnDepartment,
     TableHeader,
     TablePagination,
@@ -29,6 +28,7 @@
 
   let requests: StudentOnDepartment[] = [];
   let error: string | null = null;
+  let success: string | null = null;
   let pagination: TablePagination = { page: 1 };
   let selectedRequest: StudentOnDepartment | null = null;
   let detailsOpen = false;
@@ -37,38 +37,32 @@
   let editStatus: string = "PENDING";
   let filterDepartmentId: number | null = null;
   let filterStatus: "ALL" | "PENDING" | "APPROVED" | "REJECTED" = "ALL";
+
+  // Formulario de creacion (datos completos del estudiante inline)
   let createOpen = false;
   let createDepartmentId: number | null = null;
-  let createStudentId: number | null = null;
   let createStatus: "PENDING" | "APPROVED" | "REJECTED" = "PENDING";
-  let studentSearch = "";
-  let studentOptions: Student[] = [];
-  let studentLoading = false;
+  let createName = "";
+  let createEmail = "";
+  let createPhone = "";
+  let createCode = "";
+  let saving = false;
 
   const headers: TableHeader[] = [
-    { name: "ID", field: "id" },
-    { name: "Estudiante", field: "student" },
+    { name: "Carnet", field: "code" },
     { name: "Departamento", field: "department" },
     { name: "Estado", field: "status" },
     { name: "Acciones", field: "actions" },
   ];
 
   function getBadgeColor(status: string) {
-    if (status === "APPROVED") {
-      return "green";
-    }
-
-    if (status === "REJECTED") {
-      return "red";
-    }
-
+    if (status === "APPROVED") return "green";
+    if (status === "REJECTED") return "red";
     return "yellow";
   }
 
   function buildCsvValue(value: unknown) {
-    if (value === null || value === undefined) {
-      return "";
-    }
+    if (value === null || value === undefined) return "";
     const text = String(value);
     if (text.includes(",") || text.includes("\n") || text.includes('"')) {
       return `"${text.replace(/"/g, '""')}"`;
@@ -82,16 +76,17 @@
       return;
     }
 
-    const headers = ["ID", "Estudiante", "Email", "Departamento", "Estado"];
+    const header = ["Carnet", "Estudiante", "Email", "Telefono", "Departamento", "Estado"];
     const rows = requests.map((request) => [
-      request.id,
+      request.student?.code ?? "-",
       request.student?.name ?? "-",
       request.student?.email ?? "-",
+      request.student?.phone ?? "-",
       request.department?.name ?? "-",
       request.status,
     ]);
 
-    const csv = [headers, ...rows]
+    const csv = [header, ...rows]
       .map((row) => row.map(buildCsvValue).join(","))
       .join("\n");
 
@@ -133,55 +128,55 @@
     }
   }
 
-  async function loadStudents() {
-    studentLoading = true;
-    const res = await getStudents({
-      page: 1,
-      size: 200,
-      search: studentSearch.trim() || undefined,
-    });
-    studentOptions = res?.data ?? [];
-    studentLoading = false;
-  }
-
   function openCreate() {
-    createDepartmentId = filterDepartmentId ?? departmentOptions[0]?.id ?? null;
-    createStudentId = null;
+    createDepartmentId =
+      filterDepartmentId ?? departmentOptions[0]?.id ?? null;
     createStatus = "PENDING";
-    studentSearch = "";
-    studentOptions = [];
+    createName = "";
+    createEmail = "";
+    createPhone = "";
+    createCode = "";
+    error = null;
+    success = null;
     createOpen = true;
-    loadStudents();
   }
 
   async function handleCreate() {
-    if (!createDepartmentId || !createStudentId) {
-      error = "Selecciona departamento y estudiante.";
+    if (!createDepartmentId) {
+      error = "Selecciona un departamento.";
+      return;
+    }
+    if (!createName.trim() || !createEmail.trim() || !createCode.trim()) {
+      error =
+        "Completa nombre, correo y carnet del estudiante antes de guardar.";
       return;
     }
 
+    saving = true;
     const created = await createScholarshipRequest({
       departmentId: Number(createDepartmentId),
-      studentId: Number(createStudentId),
       status: createStatus,
+      name: createName.trim(),
+      email: createEmail.trim(),
+      phone: createPhone.trim(),
+      code: createCode.trim(),
     });
+    saving = false;
 
     if (!created) {
-      error = "No se pudo crear la solicitud.";
+      error =
+        "No se pudo crear la solicitud. Verifica que el carnet no este repetido en este departamento.";
       return;
     }
 
     createOpen = false;
+    success = "Solicitud creada correctamente.";
     await loadRequests();
   }
 
   function handleFilterChange() {
     pagination.page = 1;
     loadRequests();
-  }
-
-  function handleStudentSearch() {
-    loadStudents();
   }
 
   function nextPage() {
@@ -198,6 +193,8 @@
     selectedRequest = request;
     editDepartmentId = request.departmentId;
     editStatus = request.status;
+    error = null;
+    success = null;
     detailsOpen = true;
   }
 
@@ -219,6 +216,12 @@
     }
 
     detailsOpen = false;
+    success =
+      editStatus === "APPROVED"
+        ? "Solicitud aprobada. Se notificara por correo al estudiante si SMTP esta activo."
+        : editStatus === "REJECTED"
+          ? "Solicitud rechazada. Se notificara por correo al estudiante si SMTP esta activo."
+          : "Solicitud actualizada.";
     await loadRequests();
   }
 
@@ -228,24 +231,32 @@
   });
 </script>
 
-<div class="w-full h-full px-4 grid gap-3">
-  <div class="flex items-center justify-between">
-    <Heading tag="h3" class="mb-2">Solicitudes de Beca</Heading>
-    <div class="flex items-center gap-2">
-      <Button size="sm" color="primary" on:click={openCreate}
-        >Nueva solicitud</Button
-      >
+<div class="w-full h-full px-2 sm:px-4 grid gap-3">
+  <div
+    class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"
+  >
+    <Heading tag="h3" class="mb-1">Solicitudes de Beca</Heading>
+    <div class="flex flex-wrap items-center gap-2">
+      <Button size="sm" color="primary" on:click={openCreate}>
+        Nueva solicitud
+      </Button>
       <Button
         size="sm"
         color="alternative"
         on:click={exportRequestsCsv}
-        disabled={!requests.length}
-        >Exportar CSV</Button
+        disabled={!requests.length}>Exportar CSV</Button
       >
     </div>
   </div>
 
-  <div class="grid md:grid-cols-2 gap-3">
+  <p class="text-xs text-gray-500">
+    Registra la solicitud con la informacion completa del estudiante. Si ya
+    existe (mismo carnet o correo), sus datos se actualizan automaticamente. Una
+    vez aprobada por el jefe de departamento, el estudiante queda disponible
+    para registrar horas.
+  </p>
+
+  <div class="grid sm:grid-cols-2 gap-3">
     <div>
       <p class="text-sm text-gray-500">Departamento</p>
       <Select bind:value={filterDepartmentId} on:change={handleFilterChange}>
@@ -267,40 +278,57 @@
   </div>
 
   {#if error}
-    <Alert type="error" dismissable>{error}</Alert>
+    <Alert color="red" dismissable>{error}</Alert>
+  {/if}
+  {#if success}
+    <Alert color="green" dismissable>{success}</Alert>
   {/if}
 
-  <Table data={requests} headers={headers} {pagination} on:next={nextPage} on:previous={previousPage}>
+  <Table
+    data={requests}
+    {headers}
+    {pagination}
+    on:next={nextPage}
+    on:previous={previousPage}
+  >
     <TableBodyRow slot="row" let:row>
-      <TableBodyCell>{row.id}</TableBodyCell>
-      <TableBodyCell>{row.student?.name ?? "-"}</TableBodyCell>
+      <TableBodyCell>{row.student?.code ?? "-"}</TableBodyCell>
       <TableBodyCell>{row.department?.name ?? "-"}</TableBodyCell>
       <TableBodyCell>
         <Badge color={getBadgeColor(row.status)}>{row.status}</Badge>
       </TableBodyCell>
       <TableBodyCell>
         <Button size="xs" color="alternative" on:click={() => openDetails(row)}>
-          Editar
+          Ver / editar
         </Button>
       </TableBodyCell>
     </TableBodyRow>
   </Table>
 </div>
 
-<Modal title="Detalles de Solicitud" bind:open={detailsOpen} outsideclose>
+<!-- Modal de detalles / edicion -->
+<Modal title="Detalles de la solicitud" bind:open={detailsOpen} outsideclose>
   {#if selectedRequest}
     <div class="grid gap-3">
-      <div>
-        <p class="text-sm text-gray-500">Estudiante</p>
-        <p class="font-medium">{selectedRequest.student?.name ?? "Unknown"}</p>
-      </div>
-      <div>
-        <p class="text-sm text-gray-500">Email</p>
-        <p class="font-medium">{selectedRequest.student?.email ?? "-"}</p>
-      </div>
-      <div>
-        <p class="text-sm text-gray-500">Código</p>
-        <p class="font-medium">{selectedRequest.student?.code ?? "-"}</p>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div>
+          <p class="text-sm text-gray-500">Estudiante</p>
+          <p class="font-medium">{selectedRequest.student?.name ?? "-"}</p>
+        </div>
+        <div>
+          <p class="text-sm text-gray-500">Carnet</p>
+          <p class="font-medium">{selectedRequest.student?.code ?? "-"}</p>
+        </div>
+        <div>
+          <p class="text-sm text-gray-500">Correo</p>
+          <p class="font-medium break-all">
+            {selectedRequest.student?.email ?? "-"}
+          </p>
+        </div>
+        <div>
+          <p class="text-sm text-gray-500">Telefono</p>
+          <p class="font-medium">{selectedRequest.student?.phone ?? "-"}</p>
+        </div>
       </div>
       <div>
         <p class="text-sm text-gray-500">Departamento</p>
@@ -312,16 +340,16 @@
         </Select>
       </div>
       <div>
-        <p class="text-sm text-gray-500">Teléfono</p>
-        <p class="font-medium">{selectedRequest.student?.phone ?? "-"}</p>
-      </div>
-      <div>
         <p class="text-sm text-gray-500">Estado</p>
         <Select bind:value={editStatus}>
           <option value="PENDING">PENDING</option>
           <option value="APPROVED">APPROVED</option>
           <option value="REJECTED">REJECTED</option>
         </Select>
+        <p class="text-xs text-gray-400 mt-1">
+          Al aprobar o rechazar se envia correo automatico al estudiante (si
+          SMTP esta configurado).
+        </p>
       </div>
     </div>
   {/if}
@@ -334,10 +362,16 @@
   </svelte:fragment>
 </Modal>
 
-<Modal title="Crear solicitud de beca" bind:open={createOpen} outsideclose>
+<!-- Modal de creacion con datos completos del estudiante -->
+<Modal title="Nueva solicitud de beca" bind:open={createOpen} outsideclose size="md">
   <div class="grid gap-3">
+    <p class="text-xs text-gray-500">
+      Llena los datos del estudiante. Si el carnet o el correo ya existe en el
+      sistema, los datos del estudiante se actualizan y se genera la solicitud.
+    </p>
+
     <div>
-      <p class="text-sm text-gray-500">Departamento</p>
+      <Label class="mb-1">Departamento</Label>
       <Select bind:value={createDepartmentId}>
         <option value={""}>Selecciona un departamento</option>
         {#each departmentOptions as department}
@@ -345,36 +379,34 @@
         {/each}
       </Select>
     </div>
-    <div>
-      <p class="text-sm text-gray-500">Buscar estudiante</p>
-      <div class="flex gap-2">
+
+    <div class="grid sm:grid-cols-2 gap-3">
+      <div>
+        <Label class="mb-1">Nombre completo</Label>
+        <Input bind:value={createName} placeholder="Ej: Carmen Perez" />
+      </div>
+      <div>
+        <Label class="mb-1">Carnet</Label>
+        <Input bind:value={createCode} placeholder="Ej: 2026-0001" />
+      </div>
+      <div>
+        <Label class="mb-1">Correo electronico</Label>
         <Input
-          bind:value={studentSearch}
-          placeholder="Nombre o carnet"
-          on:keydown={(event) => event.key === "Enter" && handleStudentSearch()}
+          type="email"
+          bind:value={createEmail}
+          placeholder="carmen@universidad.edu"
         />
-        <Button size="sm" color="alternative" on:click={handleStudentSearch}
-          >Buscar</Button
-        >
+      </div>
+      <div>
+        <Label class="mb-1">Telefono</Label>
+        <Input bind:value={createPhone} placeholder="+507 6000-0000" />
       </div>
     </div>
+
     <div>
-      <p class="text-sm text-gray-500">Estudiante</p>
-      <Select bind:value={createStudentId}>
-        <option value={""}>
-          {studentLoading ? "Cargando..." : "Selecciona un estudiante"}
-        </option>
-        {#each studentOptions as student}
-          <option value={student.id}>
-            {student.name ?? "-"} - {student.code ?? student.id}
-          </option>
-        {/each}
-      </Select>
-    </div>
-    <div>
-      <p class="text-sm text-gray-500">Estado</p>
+      <Label class="mb-1">Estado inicial</Label>
       <Select bind:value={createStatus}>
-        <option value="PENDING">PENDING</option>
+        <option value="PENDING">PENDING (en espera de aprobacion)</option>
         <option value="APPROVED">APPROVED</option>
         <option value="REJECTED">REJECTED</option>
       </Select>
@@ -382,11 +414,11 @@
   </div>
 
   <svelte:fragment slot="footer">
-    <Button color="primary" on:click={handleCreate}>Crear</Button>
+    <Button color="primary" on:click={handleCreate} disabled={saving}>
+      {saving ? "Guardando..." : "Crear solicitud"}
+    </Button>
     <Button color="alternative" on:click={() => (createOpen = false)}>
       Cerrar
     </Button>
   </svelte:fragment>
 </Modal>
-
-

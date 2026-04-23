@@ -13,7 +13,12 @@
 	import { onMount } from "svelte";
 	import { get } from "svelte/store";
 	import Table from "$lib/components/Table.svelte";
-	import { createPeriod, getPeriods, updatePeriod } from "$lib/services/period.service";
+	import {
+		closePeriod,
+		createPeriod,
+		getPeriods,
+		updatePeriod,
+	} from "$lib/services/period.service";
 	import { exportPeriodsToExcel, exportPeriodsToPdf } from "$lib/utils/period-export";
 	import { authReady, userStore } from "$stores/user.store";
 	import { hasAnyPermission } from "$lib/utils/permissions";
@@ -21,6 +26,7 @@
 
 	let periods: Period[] = [];
 	let error: string | null = null;
+	let success: string | null = null;
 	let pagination: TablePagination = { page: 1 };
 	let exportingPdf = false;
 	let exportingExcel = false;
@@ -37,6 +43,9 @@
 		end: "",
 	};
 	let formSaving = false;
+	let closeModalOpen = false;
+	let closeTargetPeriod: Period | null = null;
+	let closing = false;
 	let currentUser: User | null = null;
 	let canWrite = false;
 	userStore.subscribe((value) => {
@@ -238,6 +247,40 @@
 		}
 	}
 
+	function openCloseModal(period: Period) {
+		if (!canWrite) {
+			error = "No tienes permisos para cerrar periodos.";
+			return;
+		}
+		if (period.status === "CLOSED") {
+			error = "Este periodo ya esta cerrado.";
+			return;
+		}
+		closeTargetPeriod = period;
+		error = null;
+		success = null;
+		closeModalOpen = true;
+	}
+
+	async function confirmClosePeriod() {
+		if (!closeTargetPeriod) return;
+		closing = true;
+		const res = await closePeriod(closeTargetPeriod.id);
+		closing = false;
+
+		if (!res) {
+			error =
+				"No se pudo cerrar el periodo. Revisa que no este cerrado ya y vuelve a intentar.";
+			closeModalOpen = false;
+			return;
+		}
+
+		closeModalOpen = false;
+		success = `Periodo "${closeTargetPeriod.name}" cerrado. Correos enviados: ${res.emailsSent}. Saltados por falta de correo o SMTP inactivo: ${res.emailsSkipped}.`;
+		closeTargetPeriod = null;
+		await loadPeriods();
+	}
+
 	async function openExportModal() {
 		try {
 			periodOptions = await getAllPeriods();
@@ -310,6 +353,10 @@
 		<Alert type="error" dismissable>{error}</Alert>
 	{/if}
 
+	{#if success}
+		<Alert color="green" dismissable>{success}</Alert>
+	{/if}
+
 	<Table data={periods} headers={headers} {pagination} on:next={nextPage} on:previous={previousPage}>
 		<TableBodyRow slot="row" let:row>
 			<TableBodyCell>{row.name}</TableBodyCell>
@@ -318,9 +365,16 @@
 			<TableBodyCell>{row.status}</TableBodyCell>
 			<TableBodyCell>
 				{#if canWrite}
-					<Button size="xs" color="alternative" on:click={() => openEditForm(row)}>
-						Editar
-					</Button>
+					<div class="flex flex-wrap gap-2">
+						<Button size="xs" color="alternative" on:click={() => openEditForm(row)}>
+							Editar
+						</Button>
+						{#if row.status !== "CLOSED"}
+							<Button size="xs" color="red" on:click={() => openCloseModal(row)}>
+								Cerrar
+							</Button>
+						{/if}
+					</div>
 				{:else}
 					-
 				{/if}
@@ -369,6 +423,31 @@
 		<Button color="primary" on:click={savePeriod} disabled={formSaving}>
 			{formMode === "create" ? "Crear" : "Guardar"}
 			{#if formSaving}
+				<Spinner size="sm" class="ml-2" />
+			{/if}
+		</Button>
+	</svelte:fragment>
+</Modal>
+
+<Modal title="Cerrar periodo" bind:open={closeModalOpen} outsideclose>
+	<div class="grid gap-3">
+		<p>
+			Estas a punto de cerrar el periodo
+			<strong>{closeTargetPeriod?.name ?? ""}</strong>.
+		</p>
+		<p class="text-sm text-gray-600">
+			Al cerrar el periodo se enviara un correo con el reporte en PDF (dias, tarifa y total) a
+			cada estudiante con horas aprobadas. Esta accion no se puede revertir.
+		</p>
+	</div>
+
+	<svelte:fragment slot="footer">
+		<Button color="alternative" on:click={() => (closeModalOpen = false)} disabled={closing}>
+			Cancelar
+		</Button>
+		<Button color="red" on:click={confirmClosePeriod} disabled={closing}>
+			Cerrar periodo
+			{#if closing}
 				<Spinner size="sm" class="ml-2" />
 			{/if}
 		</Button>

@@ -4,7 +4,6 @@
   import type { PageConfigType } from "$lib/components/types";
   import Periods from "./configurations/Periods.svelte";
   import Departments from "./configurations/Departments.svelte";
-  import Students from "./configurations/Students.svelte";
   import Users from "./configurations/Users.svelte";
   import Roles from "./configurations/Roles.svelte";
   import Permissions from "./configurations/Permissions.svelte";
@@ -31,12 +30,6 @@
       component: Departments,
       open: false,
       permissions: ["departments.read"],
-    },
-    {
-      title: "Estudiantes",
-      component: Students,
-      open: false,
-      permissions: ["students.read"],
     },
     {
       title: "Usuarios",

@@ -6,8 +6,10 @@
     Checkbox,
     Heading,
     Input,
+    Label,
     Modal,
     Select,
+    Toggle,
   } from "flowbite-svelte";
   import { onMount } from "svelte";
   import Table from "$lib/components/Table.svelte";
@@ -35,6 +37,7 @@
 
   let workHours: WorkHours[] = [];
   let error: string | null = null;
+  let success: string | null = null;
   let pagination: TablePagination = { page: 1 };
   let departments: Department[] = [];
   let periods: Period[] = [];
@@ -51,6 +54,7 @@
   let statusFilter: "ALL" | "PENDING" | "APPROVED" | "REJECTED" = "ALL";
   let startDateFilter = "";
   let endDateFilter = "";
+  let showFilters = true;
   let formOpen = false;
   let formMode: "create" | "update" = "create";
   let editingId: number | null = null;
@@ -61,6 +65,8 @@
   let formPrice = 0;
   let formStatus: "PENDING" | "APPROVED" | "REJECTED" = "PENDING";
   let formIsAdditional = false;
+  let formManualAmount = true;
+  let formDateOnly = "";
   let additionalStudentSearch = "";
   let assignedDepartmentLabel = "";
   let canViewFinancials = false;
@@ -91,8 +97,8 @@
     { name: "Salida", field: "end" },
     ...(canViewFinancials
       ? [
-          { name: "Horas registradas", field: "amount" },
-          { name: "Precio unitario", field: "price" },
+          { name: "Horas", field: "amount" },
+          { name: "Precio", field: "price" },
           { name: "Total", field: "total" },
         ]
       : []),
@@ -204,7 +210,8 @@
       if (currentUser?.departmentId) {
         selectedDepartmentId = currentUser.departmentId;
       } else if (currentUser?.departmentRoles?.length) {
-        selectedDepartmentId = currentUser.departmentRoles[0]?.departmentId ?? null;
+        selectedDepartmentId =
+          currentUser.departmentRoles[0]?.departmentId ?? null;
       }
     }
   }
@@ -232,22 +239,35 @@
     allStudents = res?.data ?? [];
   }
 
-  function openForm() {
-    formMode = "create";
-    editingId = null;
-    formOpen = true;
+  function resetFormState() {
     formName = "Horas beca";
     formStart = "";
     formEnd = "";
     formAmount = 0;
-    formPrice = 0;
     formStatus = "PENDING";
     formIsAdditional = false;
+    formManualAmount = true;
+    formDateOnly = new Date().toISOString().slice(0, 10);
     selectedStudentId = null;
     selectedStudentRelationId = null;
     selectedAdditionalStudentId = null;
     additionalStudentSearch = "";
     assignedDepartmentLabel = "";
+  }
+
+  function setQuickHours(value: number) {
+    formAmount = value;
+    formManualAmount = true;
+    if (!formDateOnly) {
+      formDateOnly = new Date().toISOString().slice(0, 10);
+    }
+  }
+
+  function openForm() {
+    formMode = "create";
+    editingId = null;
+    formOpen = true;
+    resetFormState();
     loadApprovedStudents();
   }
 
@@ -267,8 +287,11 @@
     formName = row.name ?? "Horas beca";
     formStart = toLocalDateTimeInput(row.start);
     formEnd = toLocalDateTimeInput(row.end);
+    formDateOnly = formStart ? formStart.slice(0, 10) : "";
+    formAmount = row.amount ?? 0;
     formStatus = row.status ?? "PENDING";
     formIsAdditional = row.isAdditional ?? false;
+    formManualAmount = false;
     selectedStudentId = row.studentId ?? null;
     selectedDepartmentId = row.departmentId ?? selectedDepartmentId;
     selectedPeriodId = row.periodId ?? selectedPeriodId;
@@ -289,7 +312,8 @@
     }
   }
 
-  function calculateAmount() {
+  function calculateAmountFromTimes() {
+    if (formManualAmount) return;
     if (!formStart || !formEnd) {
       formAmount = 0;
       return;
@@ -304,10 +328,34 @@
     formAmount = Number((diffMs / (1000 * 60 * 60)).toFixed(2));
   }
 
+  /**
+   * Cuando el usuario elige el modo manual:
+   *  - Escribe el dia de la jornada y la cantidad de horas.
+   *  - Sintetizamos start = dia 08:00 y end = start + amount horas,
+   *    para que el backend mantenga la consistencia del modelo.
+   */
+  function syncManualTimes() {
+    if (!formManualAmount || !formDateOnly || !formAmount || formAmount <= 0) {
+      return;
+    }
+    const base = new Date(`${formDateOnly}T08:00:00`);
+    formStart = toLocalDateTimeInput(base);
+    const end = new Date(base.getTime() + formAmount * 60 * 60 * 1000);
+    formEnd = toLocalDateTimeInput(end);
+  }
+
   async function handleSave() {
     if (!selectedDepartmentId || !selectedPeriodId) {
       error = "Selecciona departamento y periodo.";
       return;
+    }
+
+    if (formManualAmount) {
+      if (!formDateOnly || !formAmount || formAmount <= 0) {
+        error = "Ingresa la fecha y la cantidad de horas trabajadas.";
+        return;
+      }
+      syncManualTimes();
     }
 
     if (!formStart || !formEnd || formAmount <= 0) {
@@ -324,13 +372,18 @@
       return;
     }
 
+    // Solo los aprobadores pueden forzar estado al editar; al crear siempre se
+    // guarda como PENDING (lo asegura el backend).
+    const payloadStatus =
+      formMode === "update" && canApprove ? formStatus : undefined;
+
     const payload = {
       name: formName,
       start: new Date(formStart).toISOString(),
       end: new Date(formEnd).toISOString(),
       amount: canViewFinancials ? formAmount : undefined,
       price: canViewFinancials ? formPrice : undefined,
-      status: undefined as "PENDING" | "APPROVED" | "REJECTED" | undefined,
+      status: payloadStatus,
       studentId: resolvedStudentId,
       departmentId: Number(selectedDepartmentId),
       periodId: Number(selectedPeriodId),
@@ -351,6 +404,10 @@
     }
 
     formOpen = false;
+    success =
+      formMode === "update"
+        ? "Horas actualizadas."
+        : "Horas registradas como PENDING. El jefe de departamento debe aprobarlas.";
     formMode = "create";
     editingId = null;
     await loadWorkHours();
@@ -364,6 +421,13 @@
   function previousPage() {
     pagination.page = pagination.prev_page ?? pagination.page;
     loadWorkHours();
+  }
+
+  function clearFilters() {
+    selectedStudentFilterId = null;
+    statusFilter = "ALL";
+    startDateFilter = "";
+    endDateFilter = "";
   }
 
   userStore.subscribe((value) => {
@@ -420,7 +484,9 @@
     loadWorkHours();
   }
 
-  $: calculateAmount();
+  $: if (!formManualAmount) {
+    calculateAmountFromTimes();
+  }
 
   onMount(() => {
     loadDepartments();
@@ -429,169 +495,303 @@
   });
 </script>
 
-<div class="w-full h-full px-4 grid gap-3">
-  <Heading tag="h3" class="mb-2">Horas de Beca Registradas</Heading>
-
-  <div class="grid md:grid-cols-2 xl:grid-cols-6 gap-3">
-    <div>
-      <p class="text-sm text-gray-500">Departamento</p>
-      <Select
-        bind:value={selectedDepartmentId}
-        on:change={() => (selectedStudentRelationId = null)}
-      >
-        <option value={""}>Selecciona un departamento</option>
-        {#each departments as department}
-          <option value={department.id}>{department.name}</option>
-        {/each}
-      </Select>
-    </div>
-    <div>
-      <p class="text-sm text-gray-500">Estudiante</p>
-      <Select bind:value={selectedStudentFilterId}>
-        <option value={""}>Todos</option>
-        {#each approvedStudents as relation}
-          <option value={relation.studentId}>
-            {relation.student?.name ?? `ID ${relation.studentId}`} -
-            {relation.department?.name ?? `Dept ${relation.departmentId}`}
-          </option>
-        {/each}
-      </Select>
-    </div>
-    <div>
-      <p class="text-sm text-gray-500">Estado</p>
-      <Select bind:value={statusFilter}>
-        <option value="ALL">Todos</option>
-        <option value="PENDING">PENDING</option>
-        <option value="APPROVED">APPROVED</option>
-        <option value="REJECTED">REJECTED</option>
-      </Select>
-    </div>
-    <div>
-      <p class="text-sm text-gray-500">Desde</p>
-      <Input type="date" bind:value={startDateFilter} />
-    </div>
-    <div>
-      <p class="text-sm text-gray-500">Hasta</p>
-      <Input type="date" bind:value={endDateFilter} />
-    </div>
-    <div class="flex items-end gap-2 flex-wrap">
+<div class="w-full h-full px-2 sm:px-4 grid gap-3 pb-20">
+  <div
+    class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+  >
+    <Heading tag="h3" class="mb-0">Horas Beca</Heading>
+    <div class="flex flex-wrap items-center gap-2">
       {#if canWrite}
-        <Button color="primary" on:click={openForm}>Registrar horas</Button>
+        <Button color="primary" size="sm" on:click={openForm}>
+          + Registrar horas
+        </Button>
       {/if}
       <Button
+        size="sm"
         color="alternative"
         on:click={exportWorkHoursCsv}
-        disabled={!workHours.length}>Exportar CSV</Button
+        disabled={!workHours.length}>CSV</Button
       >
       <Button
+        size="sm"
         color="alternative"
         on:click={handlePrint}
         disabled={!workHours.length}>Imprimir</Button
       >
+      <Button
+        size="sm"
+        color="alternative"
+        on:click={() => (showFilters = !showFilters)}
+      >
+        {showFilters ? "Ocultar filtros" : "Mostrar filtros"}
+      </Button>
     </div>
   </div>
 
-  {#if error}
-    <Alert type="error" dismissable>{error}</Alert>
+  {#if showFilters}
+    <div class="p-3 border rounded-lg bg-gray-50 grid gap-3">
+      <div
+        class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"
+      >
+        <div>
+          <Label class="text-xs text-gray-500 mb-1">Departamento</Label>
+          <Select
+            bind:value={selectedDepartmentId}
+            on:change={() => (selectedStudentRelationId = null)}
+          >
+            <option value={""}>Todos</option>
+            {#each departments as department}
+              <option value={department.id}>{department.name}</option>
+            {/each}
+          </Select>
+        </div>
+        <div>
+          <Label class="text-xs text-gray-500 mb-1">Estudiante</Label>
+          <Select bind:value={selectedStudentFilterId}>
+            <option value={""}>Todos</option>
+            {#each approvedStudents as relation}
+              <option value={relation.studentId}>
+                {relation.student?.name ?? `ID ${relation.studentId}`}
+              </option>
+            {/each}
+          </Select>
+        </div>
+        <div>
+          <Label class="text-xs text-gray-500 mb-1">Estado</Label>
+          <Select bind:value={statusFilter}>
+            <option value="ALL">Todos</option>
+            <option value="PENDING">Pendientes</option>
+            <option value="APPROVED">Aprobadas</option>
+            <option value="REJECTED">Rechazadas</option>
+          </Select>
+        </div>
+        <div>
+          <Label class="text-xs text-gray-500 mb-1">Desde</Label>
+          <Input type="date" bind:value={startDateFilter} />
+        </div>
+        <div>
+          <Label class="text-xs text-gray-500 mb-1">Hasta</Label>
+          <Input type="date" bind:value={endDateFilter} />
+        </div>
+      </div>
+      <div class="flex justify-end">
+        <Button size="xs" color="alternative" on:click={clearFilters}>
+          Limpiar filtros
+        </Button>
+      </div>
+    </div>
   {/if}
 
-  <Table
-    data={workHours.map(mapHoursForDisplay)}
-    {headers}
-    {pagination}
-    on:next={nextPage}
-    on:previous={previousPage}
-  >
-    <svelte:fragment slot="row" let:row>
-      <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-        {row.studentName}
-      </td>
-      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-        {row.departmentName}
-      </td>
-      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-        {new Date(row.start).toLocaleString()}
-      </td>
-      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-        {new Date(row.end).toLocaleString()}
-      </td>
-      {#if canViewFinancials}
-        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-          {row.amount ?? "-"}
+  {#if error}
+    <Alert color="red" dismissable>{error}</Alert>
+  {/if}
+  {#if success}
+    <Alert color="green" dismissable>{success}</Alert>
+  {/if}
+
+  <!-- Tabla tradicional (desktop) -->
+  <div class="hidden md:block">
+    <Table
+      data={workHours.map(mapHoursForDisplay)}
+      {headers}
+      {pagination}
+      on:next={nextPage}
+      on:previous={previousPage}
+    >
+      <svelte:fragment slot="row" let:row>
+        <td
+          class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900"
+        >
+          {row.studentName}
         </td>
         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-          {row.price != null
-            ? `RD$ ${row.price?.toLocaleString?.("es-DO") ?? row.price}`
-            : "-"}
+          {row.departmentName}
         </td>
-        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-          {row.total != null
-            ? `RD$ ${row.total?.toLocaleString?.("es-DO") ?? row.total}`
-            : "-"}
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+          {new Date(row.start).toLocaleString()}
         </td>
-      {/if}
-      <td class="px-6 py-4 whitespace-nowrap text-sm">
-        <Badge color={row.isAdditional ? "purple" : "blue"}>
-          {row.isAdditional ? "Adicional" : "Asignado"}
-        </Badge>
-      </td>
-      <td class="px-6 py-4 whitespace-nowrap text-sm">
-        <Badge color={getBadgeColor(row.status)}>
-          {row.status}
-        </Badge>
-      </td>
-      <td class="px-6 py-4 whitespace-nowrap text-sm">
-        {#if canWrite}
-          <Button size="xs" color="alternative" on:click={() => openEdit(row)}>
-            Editar
-          </Button>
-        {:else}
-          -
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+          {new Date(row.end).toLocaleString()}
+        </td>
+        {#if canViewFinancials}
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+            {row.amount ?? "-"}
+          </td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+            {row.price != null
+              ? `RD$ ${row.price?.toLocaleString?.("es-DO") ?? row.price}`
+              : "-"}
+          </td>
+          <td
+            class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900"
+          >
+            {row.total != null
+              ? `RD$ ${row.total?.toLocaleString?.("es-DO") ?? row.total}`
+              : "-"}
+          </td>
         {/if}
-      </td>
-    </svelte:fragment>
-  </Table>
+        <td class="px-6 py-4 whitespace-nowrap text-sm">
+          <Badge color={row.isAdditional ? "purple" : "blue"}>
+            {row.isAdditional ? "Adicional" : "Asignado"}
+          </Badge>
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm">
+          <Badge color={getBadgeColor(row.status)}>
+            {row.status}
+          </Badge>
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm">
+          {#if canWrite}
+            <Button
+              size="xs"
+              color="alternative"
+              on:click={() => openEdit(row)}
+            >
+              {canApprove && row.status === "PENDING" ? "Verificar" : "Editar"}
+            </Button>
+          {:else}
+            -
+          {/if}
+        </td>
+      </svelte:fragment>
+    </Table>
+  </div>
+
+  <!-- Vista de tarjetas (mobile) -->
+  <div class="md:hidden grid gap-2">
+    {#if !workHours.length}
+      <p class="text-sm text-gray-500 text-center py-4">
+        No hay horas registradas.
+      </p>
+    {/if}
+    {#each workHours.map(mapHoursForDisplay) as row}
+      <div class="p-3 border rounded-lg bg-white grid gap-2 shadow-sm">
+        <div class="flex items-start justify-between gap-2">
+          <div class="grid gap-0.5">
+            <p class="font-semibold text-gray-900">{row.studentName}</p>
+            <p class="text-xs text-gray-500">{row.departmentName}</p>
+          </div>
+          <div class="flex flex-col items-end gap-1">
+            <Badge color={getBadgeColor(row.status)}>{row.status}</Badge>
+            <Badge color={row.isAdditional ? "purple" : "blue"}>
+              {row.isAdditional ? "Adicional" : "Asignado"}
+            </Badge>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 text-xs text-gray-600">
+          <div>
+            <p class="text-gray-400">Entrada</p>
+            <p>{new Date(row.start).toLocaleString()}</p>
+          </div>
+          <div>
+            <p class="text-gray-400">Salida</p>
+            <p>{new Date(row.end).toLocaleString()}</p>
+          </div>
+          {#if canViewFinancials}
+            <div>
+              <p class="text-gray-400">Horas</p>
+              <p class="font-medium">{row.amount ?? "-"}</p>
+            </div>
+            <div>
+              <p class="text-gray-400">Total</p>
+              <p class="font-medium">
+                {row.total != null
+                  ? `RD$ ${row.total?.toLocaleString?.("es-DO") ?? row.total}`
+                  : "-"}
+              </p>
+            </div>
+          {/if}
+        </div>
+
+        {#if canWrite}
+          <div class="flex justify-end">
+            <Button
+              size="xs"
+              color="alternative"
+              on:click={() => openEdit(row)}
+            >
+              {canApprove && row.status === "PENDING" ? "Verificar" : "Editar"}
+            </Button>
+          </div>
+        {/if}
+      </div>
+    {/each}
+    {#if pagination.prev_page || pagination.next_page}
+      <div class="flex justify-between pt-2">
+        <Button
+          size="xs"
+          color="alternative"
+          disabled={!pagination.prev_page}
+          on:click={previousPage}>Anterior</Button
+        >
+        <Button
+          size="xs"
+          color="alternative"
+          disabled={!pagination.next_page}
+          on:click={nextPage}>Siguiente</Button
+        >
+      </div>
+    {/if}
+  </div>
 </div>
 
 <Modal
   title={formMode === "update" ? "Editar horas beca" : "Registrar horas beca"}
   bind:open={formOpen}
   outsideclose
+  size="md"
 >
-  <div class="grid gap-3">
-    <div>
-      <p class="text-sm text-gray-500">Departamento</p>
-      <Select
-        bind:value={selectedDepartmentId}
-        on:change={() => (selectedStudentRelationId = null)}
-      >
-        <option value={""}>Selecciona un departamento</option>
-        {#each departments as department}
-          <option value={department.id}>{department.name}</option>
-        {/each}
-      </Select>
+  <div class="grid gap-4">
+    <!-- Departamento + periodo -->
+    <div class="grid sm:grid-cols-2 gap-3">
+      <div>
+        <Label class="mb-1">Departamento</Label>
+        <Select
+          bind:value={selectedDepartmentId}
+          on:change={() => (selectedStudentRelationId = null)}
+        >
+          <option value={""}>Selecciona un departamento</option>
+          {#each departments as department}
+            <option value={department.id}>{department.name}</option>
+          {/each}
+        </Select>
+      </div>
+      <div>
+        <Label class="mb-1">Periodo</Label>
+        <Select bind:value={selectedPeriodId}>
+          <option value={""}>Selecciona un periodo</option>
+          {#each periods as period}
+            <option value={period.id}>{period.name}</option>
+          {/each}
+        </Select>
+      </div>
     </div>
 
-    <div class="flex items-center gap-2">
+    <!-- Tipo de estudiante -->
+    <div class="flex items-center gap-2 p-2 bg-gray-50 rounded">
       <Checkbox bind:checked={formIsAdditional} />
-      <p class="text-sm text-gray-700">
-        Estudiante adicional (no asignado a este departamento)
-      </p>
+      <div class="grid gap-0.5">
+        <p class="text-sm font-medium">Estudiante adicional</p>
+        <p class="text-xs text-gray-500">
+          Actualo cuando registras horas para alguien que no esta asignado a
+          este departamento.
+        </p>
+      </div>
     </div>
 
     {#if formIsAdditional}
       <div>
-        <p class="text-sm text-gray-500">Buscar estudiante</p>
-        <div class="flex gap-2">
-          <Input
-            bind:value={additionalStudentSearch}
-            placeholder="Nombre o carnet"
-            on:input={() => loadAllStudents(additionalStudentSearch || undefined)}
-          />
-        </div>
+        <Label class="mb-1">Buscar estudiante</Label>
+        <Input
+          bind:value={additionalStudentSearch}
+          placeholder="Nombre o carnet"
+          on:input={() =>
+            loadAllStudents(additionalStudentSearch || undefined)}
+        />
       </div>
       <div>
-        <p class="text-sm text-gray-500">Estudiante adicional</p>
+        <Label class="mb-1">Estudiante adicional</Label>
         <Select bind:value={selectedAdditionalStudentId}>
           <option value={""}>Selecciona un estudiante</option>
           {#each allStudents as student}
@@ -603,9 +803,9 @@
       </div>
     {:else}
       <div>
-        <p class="text-sm text-gray-500">Estudiante asignado</p>
+        <Label class="mb-1">Estudiante asignado</Label>
         <Select bind:value={selectedStudentRelationId}>
-          <option value={""}>Selecciona un estudiante</option>
+          <option value={""}>Selecciona un estudiante aprobado</option>
           {#each approvedStudents as relation}
             <option value={relation.id}>
               {relation.student?.name ?? `ID ${relation.studentId}`} -
@@ -613,64 +813,128 @@
             </option>
           {/each}
         </Select>
-      </div>
-      <div>
-        <p class="text-sm text-gray-500">Departamento asignado</p>
-        <Input value={assignedDepartmentLabel || "-"} readonly />
+        <p class="text-xs text-gray-400 mt-1">
+          Solo se muestran estudiantes aprobados en {assignedDepartmentLabel ||
+            "este departamento"}.
+        </p>
       </div>
     {/if}
 
+    <!-- Nombre de la jornada -->
     <div>
-      <p class="text-sm text-gray-500">Periodo</p>
-      <Select bind:value={selectedPeriodId}>
-        <option value={""}>Selecciona un periodo</option>
-        {#each periods as period}
-          <option value={period.id}>{period.name}</option>
-        {/each}
-      </Select>
+      <Label class="mb-1">Descripcion</Label>
+      <Input
+        bind:value={formName}
+        placeholder="Ej: Tutoria matematica, Laboratorio..."
+      />
     </div>
-    <div>
-      <p class="text-sm text-gray-500">Nombre</p>
-      <Input bind:value={formName} placeholder="Horas beca" />
-    </div>
-    <div>
-      <p class="text-sm text-gray-500">Hora entrada</p>
-      <Input type="datetime-local" bind:value={formStart} />
-    </div>
-    <div>
-      <p class="text-sm text-gray-500">Hora salida</p>
-      <Input type="datetime-local" bind:value={formEnd} />
-    </div>
-    {#if canViewFinancials}
-      <div>
-        <p class="text-sm text-gray-500">Horas calculadas</p>
-        <Input bind:value={formAmount} readonly />
+
+    <!-- Modo de registro -->
+    <div class="p-3 border rounded-lg grid gap-3 bg-gray-50">
+      <div class="flex items-center justify-between gap-2">
+        <div>
+          <p class="text-sm font-medium">
+            {formManualAmount ? "Registro rapido por dia" : "Registro por hora exacta"}
+          </p>
+          <p class="text-xs text-gray-500">
+            {formManualAmount
+              ? "Solo escoges fecha y cuantas horas trabajaste. Pensado para moviles."
+              : "Escoges hora exacta de entrada y salida. Util desde computadora."}
+          </p>
+        </div>
+        <Toggle bind:checked={formManualAmount} />
       </div>
-      <div>
-        <p class="text-sm text-gray-500">Precio por hora</p>
-        <Input type="number" bind:value={formPrice} min="0" step="0.01" readonly />
+
+      {#if formManualAmount}
+        <div class="grid gap-3">
+          <div>
+            <Label class="mb-1 text-sm font-medium">Fecha del trabajo</Label>
+            <Input type="date" bind:value={formDateOnly} class="text-base" />
+          </div>
+          <div>
+            <Label class="mb-1 text-sm font-medium">Horas trabajadas</Label>
+            <Input
+              type="number"
+              min="0"
+              step="0.25"
+              bind:value={formAmount}
+              placeholder="Ej: 2.5"
+              class="text-base"
+            />
+            <div class="flex flex-wrap gap-2 mt-2">
+              {#each [1, 2, 3, 4, 6, 8] as quickValue}
+                <Button
+                  size="xs"
+                  color={formAmount === quickValue ? "primary" : "alternative"}
+                  on:click={() => setQuickHours(quickValue)}
+                >
+                  {quickValue}h
+                </Button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      {:else}
+        <div class="grid sm:grid-cols-2 gap-3">
+          <div>
+            <Label class="mb-1 text-sm font-medium">Hora entrada</Label>
+            <Input type="datetime-local" bind:value={formStart} class="text-base" />
+          </div>
+          <div>
+            <Label class="mb-1 text-sm font-medium">Hora salida</Label>
+            <Input type="datetime-local" bind:value={formEnd} class="text-base" />
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    {#if canViewFinancials}
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div>
+          <Label class="mb-1">Horas calculadas</Label>
+          <Input value={formAmount} readonly />
+        </div>
+        <div>
+          <Label class="mb-1">Precio por hora</Label>
+          <Input
+            type="number"
+            value={formPrice}
+            min="0"
+            step="0.01"
+            readonly
+          />
+        </div>
       </div>
     {/if}
-    {#if canApprove}
-      <div>
-        <p class="text-sm text-gray-500">Estado</p>
+
+    {#if formMode === "update" && canApprove}
+      <div class="p-3 bg-blue-50 border border-blue-200 rounded grid gap-2">
+        <p class="text-sm font-medium text-blue-900">
+          Verificacion del jefe de departamento
+        </p>
         <Select bind:value={formStatus}>
-          <option value="PENDING">PENDING</option>
-          <option value="APPROVED">APPROVED</option>
-          <option value="REJECTED">REJECTED</option>
+          <option value="PENDING">Dejar como PENDING</option>
+          <option value="APPROVED">Aprobar</option>
+          <option value="REJECTED">Rechazar</option>
         </Select>
+        <p class="text-xs text-blue-800">
+          Al aprobar, las horas quedan firmes en el periodo.
+        </p>
       </div>
-    {:else}
-      <p class="text-xs text-gray-400">
-        Las horas se registran como pendientes para verificación del jefe de departamento.
-      </p>
+    {:else if formMode === "create"}
+      <Alert color="yellow">
+        Las horas se registran automaticamente como <b>PENDING</b>. Solo el jefe
+        del departamento puede aprobarlas para que entren al periodo.
+      </Alert>
     {/if}
   </div>
 
   <svelte:fragment slot="footer">
     <Button color="primary" on:click={handleSave}>
-      {formMode === "update" ? "Actualizar" : "Guardar"}
+      {formMode === "update" ? "Guardar cambios" : "Registrar"}
     </Button>
-    <Button color="alternative" on:click={() => (formOpen = false)}>Cerrar</Button>
+    <Button color="alternative" on:click={() => (formOpen = false)}
+      >Cerrar</Button
+    >
   </svelte:fragment>
 </Modal>
